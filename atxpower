@@ -1,0 +1,299 @@
+#!/bin/bash
+
+power_state=off
+
+check_dev_exist() {
+    if [[ ! -e "${serial_device}" ]]; then
+        echo "Error: ${serial_device} does not exist."
+        exit 1
+    fi
+    if [[ -f "${serial_device}" ]]; then
+        echo "Error: ${serial_device} is a regular file, not a character device."
+        rm -f ${serial_device}
+        exit 1
+    fi
+    if [[ ! -c "${serial_device}" ]]; then
+        echo "Error: ${serial_device} is not a character device."
+        exit 1
+    fi
+}
+
+get_state() {
+    check_dev_exist
+    echo -e "GET_POWER_STATE\n" >&3
+    power_state=$(timeout ${UART_WAIT_TIME} bash -c '
+    while read -r line <&3; do
+        if [[ "$line" == "RCV: GET_POWER_STATE" ]]; then
+            while read -r line <&3; do
+                if [[ "$line" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+                    echo "$line"
+                    exit 0
+                else
+                    exit 1
+                fi
+            done
+        else
+            echo "Error: Unknown device ${serial_device}."
+            exit 1
+        fi
+    done
+    ')
+    if [ $? != 0 ]; then
+        echo "Error: Unknown device ${serial_device}."
+        check_dev_exist
+        exit 1
+    fi
+
+    case $power_state in
+        0)
+            power_state="off"
+            ;;
+        1)
+            power_state="on"
+            ;;
+        2)
+            power_state="sleep"
+            ;;
+        *)
+            echo "Unknown status: $power_state"
+            ;;
+    esac
+}
+
+state() {
+    get_state
+    exec 3<&-
+    echo "$power_state"
+}
+
+click_power_short() {
+    check_dev_exist
+    echo -e "POWER_SW\n" >&3
+    timeout ${UART_WAIT_TIME} bash -c '
+    while read -r line <&3; do
+        if [[ "$line" == "RCV: POWER_SW" ]]; then
+            exec 3<&-
+            exit 0
+        else
+            exec 3<&-
+            exit 1
+        fi
+    done
+    '
+    if [ $? != 0 ]; then
+        echo "Error: Unknown device ${serial_device}."
+        check_dev_exist
+        exit 1
+    fi
+}
+
+click_power_long() {
+    check_dev_exist
+    echo -e "POWER_SW_FORCE 10000\n" >&3
+    timeout ${UART_WAIT_TIME} bash -c '
+    while read -r line <&3; do
+        if [[ "$line" == "RCV: POWER_SW_FORCE" ]]; then
+            exec 3<&-
+            exit 0
+        else
+            exec 3<&-
+            exit 1
+        fi
+    done
+    '
+    if [ $? != 0 ]; then
+        echo "Error: Unknown device ${serial_device}."
+        check_dev_exist
+        exit 1
+    fi
+}
+
+click_reset() {
+    check_dev_exist
+    echo -e "POWER_RESET\n" >&3
+    timeout ${UART_WAIT_TIME} bash -c '
+    while read -r line <&3; do
+        if [[ "$line" == "RCV: POWER_RESET" ]]; then
+            exec 3<&-
+            exit 0
+        else
+            exec 3<&-
+            exit 1
+        fi
+    done
+    '
+    if [ $? != 0 ]; then
+        echo "Error: Unknown device ${serial_device}."
+        check_dev_exist
+        exit 1
+    fi
+}
+
+on() {
+    get_state
+
+    if [ "$power_state" == "on" ]; then
+        echo "already"
+        exec 3<&-
+        check_dev_exist
+        exit 0
+    fi
+
+    read -r line <&3
+    click_power_short
+}
+
+off() {
+    get_state
+    if [ "$power_state" == "off" ]; then
+        echo "already"
+        exec 3<&-
+        check_dev_exist
+        exit 0
+    fi
+
+    read -r line <&3
+    click_power_short
+}
+
+off_hard() {
+    get_state
+    if [ "$power_state" == "off" ]; then
+        echo "already"
+        exec 3<&-
+        check_dev_exist
+        exit 0
+    fi
+
+    read -r line <&3
+    click_power_long
+}
+
+reset() {
+    get_state
+    if [ "$power_state" == "off" ]; then
+        echo "invalid"
+        exec 3<&-
+        check_dev_exist
+        exit 1
+    fi
+
+    read -r line <&3
+    click_reset
+}
+
+get_sn() {
+    check_dev_exist
+    echo -e "GET_SN\n" >&3
+    sn=$(timeout ${UART_WAIT_TIME} bash -c '
+    while read -r line <&3; do
+        if [[ "$line" == "RCV: GET_SN" ]]; then
+            while read -r line <&3; do
+                if [[ "$line" =~ ^[A-Za-z0-9]+$ ]]; then
+                    echo $line
+                    exec 3<&-
+                    exit 0
+                else
+                    exec 3<&-
+                    exit 1
+                fi
+            done
+        else
+            echo "Error: Unknown device ${serial_device}."
+            exec 3<&-
+            exit 1
+        fi
+    done
+    ')
+    if [ $? != 0 ]; then
+        echo "Error: Unknown device ${serial_device}."
+        check_dev_exist
+        exit 1
+    fi
+
+    echo "${sn}"
+}
+
+boot() {
+    check_dev_exist
+    echo -e "UPDATE\n" >&3
+    timeout ${UART_WAIT_TIME} bash -c '
+    while read -r line <&3; do
+        if [[ "$line" == "RCV: UPDATE" ]]; then
+            exec 3<&-
+            exit 0
+        else
+            exec 3<&-
+            exit 1
+        fi
+    done
+    '
+    if [ $? != 0 ]; then
+        echo "Error: Unknown device ${serial_device}."
+        check_dev_exist
+        exit 1
+    fi
+}
+
+if [ "$#" -ne 2 ]; then
+    echo "Error: Invalid parameter."
+    echo "usage: $0 <uart-device> <command>"
+    echo "command:"
+    echo "  power_on"
+    echo "  power_off"
+    echo "  power_off_hard"
+    echo "  power_reset"
+    echo "  click_power_short"
+    echo "  click_power_long"
+    echo "  click_reset"
+    echo "  power_state : on/off/sleep"
+    echo "  get_sn"
+    echo "  boot"
+    echo ""
+    exit 1
+fi
+
+serial_device=$1
+UART_WAIT_TIME=1s
+
+check_dev_exist
+
+stty -F "${serial_device}" -echo
+shift
+
+if ! exec 3<>"${serial_device}"; then
+    echo "Error: Failed to open ${serial_device}."
+    check_dev_exist
+    exit 1
+fi
+
+if [ "$1" == "power_on" ]; then
+    on
+elif [ "$1" == "power_off" ]; then
+    off
+elif [ "$1" == "power_off_hard" ]; then
+    off_hard
+elif [ "$1" == "power_reset" ]; then
+    reset
+elif [ "$1" == "click_power_short" ]; then
+    click_power_short
+elif [ "$1" == "click_power_long" ]; then
+    click_power_long
+elif [ "$1" == "click_reset" ]; then
+    click_reset
+elif [ "$1" == "power_state" ]; then
+    state
+elif [ "$1" == "get_sn" ]; then
+    get_sn
+elif [ "$1" == "boot" ]; then
+    boot
+else
+    echo "Error: Invalid parameter."
+    exec 3<&-
+    check_dev_exist
+    exit 1
+fi
+
+if [ $? == 0 -a "$1" != "power_state" -a "$1" != "get_sn" ]; then
+    echo "success"
+fi
